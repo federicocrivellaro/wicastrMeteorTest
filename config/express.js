@@ -1,117 +1,71 @@
+/* globals require */
+'use strict'
 
 /**
  * Module dependencies.
  */
+var mean = require('meanio')
+var compression = require('compression')
+var consolidate = require('consolidate')
+var express = require('express')
+var helpers = require('view-helpers')
+var flash = require('connect-flash')
+var modRewrite = require('connect-modrewrite')
+// seo = require('mean-seo'),
+var config = mean.getConfig()
+var bodyParser = require('body-parser')
+var helmet = require('helmet')
 
-var express = require('express');
-var session = require('express-session');
-var compression = require('compression');
-var morgan = require('morgan');
-var cookieParser = require('cookie-parser');
-var cookieSession = require('cookie-session');
-var bodyParser = require('body-parser');
-var methodOverride = require('method-override');
-var csrf = require('csurf');
+module.exports = function (app, db) {
+  if (process.env.NODE_ENV === 'development' && process.argv.indexOf('--wdm') !== -1) {
+    require('./middlewares/webpack-dev')(app)
+  }
+  app.use(bodyParser.json(config.bodyParser.json))
+  app.use(bodyParser.urlencoded(config.bodyParser.urlencoded))
 
-var mongoStore = require('connect-mongo')(session);
-var flash = require('connect-flash');
-var winston = require('winston');
-var helpers = require('view-helpers');
-var jade = require('jade');
-var config = require('./');
-var pkg = require('../package.json');
+  app.use(helmet())
 
-var env = process.env.NODE_ENV || 'development';
+  app.set('showStackError', true)
 
-/**
- * Expose
- */
+  // Prettify HTML
+  app.locals.pretty = true
 
-module.exports = function (app, passport) {
+  // cache=memory or swig dies in NODE_ENV=production
+  app.locals.cache = 'memory'
 
-  // Compression middleware (should be placed before express.static)
+  // Should be placed before express.static
+  // To ensure that all assets and data are compressed (utilize bandwidth)
   app.use(compression({
-    threshold: 512
-  }));
+    // Levels are specified in a range of 0 to 9, where-as 0 is
+    // no compression and 9 is best compression, but slowest
+    level: 9
+  }))
 
-  // Static files middleware
-  app.use(express.static(config.root + '/public'));
+  // Enable compression on bower_components
+  app.use('/bower_components', express.static(config.root + '/bower_components'))
 
-  // Use winston on production
-  var log;
-  if (env !== 'development') {
-    log = {
-      stream: {
-        write: function (message, encoding) {
-          winston.info(message);
-        }
-      }
-    };
-  } else {
-    log = 'dev';
-  }
+  app.use('/bundle', express.static(config.root + '/bundle'))
 
-  // Don't log during tests
-  // Logging middleware
-  if (env !== 'test') app.use(morgan(log));
+  // Adds logging based on logging config in config/env/ entry
+  require('./middlewares/logging')(app, config.logging)
 
-  // set views path and default layout
-  app.set('views', config.root + '/app/views');
-  app.set('view engine', 'jade');
+  // assign the template engine to .html files
+  app.engine('html', consolidate[config.templateEngine])
 
-  // expose package.json to views
-  app.use(function (req, res, next) {
-    res.locals.pkg = pkg;
-    res.locals.env = env;
-    next();
-  });
+  // set .html as the default extension
+  app.set('view engine', 'html')
 
-  // bodyParser should be above methodOverride
-  app.use(bodyParser.urlencoded({
-    extended: true
-  }));
-  app.use(bodyParser.json());
-  app.use(methodOverride(function (req, res) {
-    if (req.body && typeof req.body === 'object' && '_method' in req.body) {
-      // look in urlencoded POST bodies and delete it
-      var method = req.body._method;
-      delete req.body._method;
-      return method;
-    }
-  }));
+  // Dynamic helpers
+  app.use(helpers(config.app.name))
 
-  // cookieParser should be above session
-  app.use(cookieParser());
-  app.use(cookieSession({ secret: 'secret' }));
-  app.use(session({
-    secret: pkg.name,
-    proxy: true,
-    resave: true,
-    saveUninitialized: true,
-    store: new mongoStore({
-      url: config.db,
-      collection : 'sessions'
-    })
-  }));
+  // Connect flash for flash messages
+  app.use(flash())
 
-  // use passport session
-  app.use(passport.initialize());
-  app.use(passport.session());
+  app.use(modRewrite([
 
-  // connect flash for flash messages - should be declared after sessions
-  app.use(flash());
+    '!^/api/.*|\\_getModules|\\.html|\\.js|\\.css|\\.swf|\\.jp(e?)g|\\.JP(E?)G|\\.PNG|\\.png|\\.ico|\\.gif|\\.svg|\\.eot|\\.ttf|\\.woff|\\.txt|\\.pdf$ / [L]'
 
-  // should be declared after session and flash
-  app.use(helpers(pkg.name));
+  ]))
 
-  // adds CSRF support
-  if (process.env.NODE_ENV !== 'test') {
-    app.use(csrf());
-
-    // This could be moved to view-helpers :-)
-    app.use(function (req, res, next){
-      res.locals.csrf_token = req.csrfToken();
-      next();
-    });
-  }
-};
+// app.use(seo())
+}

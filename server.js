@@ -1,62 +1,60 @@
-'use strict';
+'use strict'
 
 /*
- * nodejs-express-mongoose
- * Copyright(c) 2015 Madhusudhan Srinivasa <madhums8@gmail.com>
- * MIT Licensed
- */
+var cl = console.log
+console.log = function(){
+  console.trace()
+  cl.apply(console,arguments)
+}
+*/
 
-/**
- * Module dependencies
- */
+process.env.NODE_CONFIG_DIR = './config/env'
 
-require('dotenv').config();
+// Requires meanio .
+var mean = require('meanio')
+var cluster = require('cluster')
+var deferred = require('q').defer()
+var debug = require('debug')('cluster')
 
-const fs = require('fs');
-const join = require('path').join;
-const express = require('express');
-const mongoose = require('mongoose');
-const passport = require('passport');
-const config = require('./config');
+// Code to run if we're in the master process or if we are not in debug mode/ running tests
 
-const models = join(__dirname, 'app/models');
-const port = process.env.PORT || 3000;
+if ((cluster.isMaster) &&
+  (process.execArgv.indexOf('--debug') < 0) &&
+  (process.env.NODE_ENV !== 'test') && (process.env.NODE_ENV !== 'development') &&
+  (process.execArgv.indexOf('--singleProcess') < 0)) {
+  // if (cluster.isMaster) {
 
-const app = express();
-const connection = connect();
+  debug(`Production Environment`)
+  // Count the machine's CPUs
+  var cpuCount = process.env.CPU_COUNT || require('os').cpus().length
 
-/**
- * Expose
- */
+  // Create a worker for each CPU
+  for (var i = 0; i < cpuCount; i += 1) {
+    debug(`forking ${i}`)
+    cluster.fork()
+  }
 
-module.exports = {
-  app,
-  connection
-};
+  // Listen for dying workers
+  cluster.on('exit', function (worker) {
+    // Replace the dead worker, we're not sentimental
+    debug(`Worker ${worker.id} died :(`)
+    cluster.fork()
+  })
 
-// Bootstrap models
-fs.readdirSync(models)
-  .filter(file => ~file.indexOf('.js'))
-  .forEach(file => require(join(models, file)));
+// Code to run if we're in a worker process
+} else {
+  var workerId = 0
+  if (!cluster.isMaster) {
+    workerId = cluster.worker.id
+  }
+  // Creates and serves mean application
+  mean.serve({ workerid: workerId }, function (app) {
+    var config = app.getConfig()
+    var port = config.https && config.https.port ? config.https.port : config.http.port
+    debug(`MEAN app started on port ${port} (${process.env.NODE_ENV}) with cluster worker id ${workerId}`)
 
-// Bootstrap routes
-require('./config/passport')(passport);
-require('./config/express')(app, passport);
-require('./config/routes')(app, passport);
-
-connection
-  .on('error', console.log)
-  .on('disconnected', connect)
-  .once('open', listen);
-
-function listen () {
-  if (app.get('env') === 'test') return;
-  app.listen(port);
-  console.log('Express app started on port ' + port);
+    deferred.resolve(app)
+  })
 }
 
-function connect () {
-  var options = { server: { socketOptions: { keepAlive: 1 } } };
-  var connection = mongoose.connect(config.db, options).connection;
-  return connection;
-}
+module.exports = deferred.promise
